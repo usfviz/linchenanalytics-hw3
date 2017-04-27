@@ -1,15 +1,16 @@
 library(dplyr)
 library(ggvis)
 library(shiny)
+library(googleVis)
 library(ggplot2)
-library(tidyr)
-library(googleCharts)
 library(GGally)
+library(plotly)
 
+#======================================== functions =============================================
 fb <- read.table("dataset_Facebook.csv", sep = ";", header = TRUE)
-fb <- fb %>% drop_na()
+fb <- na.omit(fb)
 
-makePairs <- function(data) 
+makePairs <- function(data)
 {
     grid <- expand.grid(x = 1:ncol(data), y = 1:ncol(data))
     grid <- subset(grid, x != y)
@@ -27,67 +28,77 @@ makePairs <- function(data)
     list(all=all, densities=densities)
 }
 
+findUniqueCombine <- function(data, var1, var2){
+    data[!duplicated(data[,c(var1,var2)]),]
+}
+
+#======================================== shiny UI =============================================
 ui <- navbarPage(
     titlePanel('HW3 Lin Chen'),
     tabPanel("Bubble chart",
-    fluidRow(column(5, h4("Facebook Data"))),
-    fluidRow(column(3, ggvisOutput("ggvis")),
-    fluidRow(
-            shiny::column(4, offset = 4,
-                          sliderInput("month", 
-                                      "Post.Month", 
-                                      min = min(fb$Post.Month), 
-                                      max = max(fb$Post.Month), 
-                                      value = 1, 
-                                      step=1,
-                                      sep = "",
-                                      animate = FALSE)
-            )
-        )
-    )
+    h4("Facebook Data"),
+    htmlOutput("bubble_plot")
     ),
-    tabPanel("Scatterplot",
-             fluidRow(column(8,
-                             checkboxGroupInput("scatterCols", inline = T,
-                                                label = 'Plot Columns',
-                                                choices = list('Type' = 'Type',
+    
+    tabPanel("FB Scatter plot",
+            checkboxGroupInput("scatterCols", inline = T,
+                                                label = 'Scatter plot',
+                                                choices = list('Total.Interactions' = 'Total.Interactions',
                                                                'like' = 'like',
                                                                'comment' = 'comment',
-                                                               'shares' = 'shares'),
-                                                selected = c('like', 'comment', 'shares'))
-             )
-             ),
-             fluidRow(column(12, plotOutput("scatter_plot")))
-    )
+                                                               'share' = 'share'),
+                                                selected = c('like', 'share')),
+            plotlyOutput("scatter_plot")),
+    
+    tabPanel("FB Parallel plot",
+             sidebarPanel(width = 3,
+                          selectizeInput("parallel_vars", "Select parallel variables(>1)",
+                                         colnames(fb), multiple = T,
+                                         selected = c("Post.Month", 
+                                                      "Type",
+                                                      "Paid"))),
+             plotlyOutput("parallel_plot"))
 )
 
-
+#======================================== shiny server =============================================
 server <- function(input, output, session) {
-    fb.data <- reactive({
+    # bubble
+    output$bubble_plot <- renderGvis({gvisMotionChart(findUniqueCombine(fb, "Total.Interactions", "Post.Month"), 
+                                                      idvar="Total.Interactions", 
+                                                      timevar="Post.Month")})
+    
+    # scatter
+    output$scatter_plot <- renderPlotly({
+        validate(
+            need(length(input$scatterCols) >= 2, label = "At least 2 variables")
+        )
+    
+        gg1 <- makePairs(fb[,input$scatterCols])
         
-        df <- 
-                fb %>% filter(Post.Month == input$month) %>%
-                select(Type, like, Total.Interactions,
-                       Post.Month, share) %>%
-                arrange(Type)
-            return(df)
-        })
+        mega_facebook <- data.frame(gg1$all, Type=rep(fb$Type, length=nrow(gg1$all)))
+        
+        # pairs 
+        ggplot(mega_facebook, aes_string(x = "x", y = "y")) + 
+            facet_grid(xvar ~ yvar, scales = "free") + 
+            geom_point(aes(colour=Type), na.rm = TRUE, alpha=0.8) + 
+            stat_density(aes(x = x, y = ..scaled.. * diff(range(x)) + min(x)), 
+                         data = gg1$densities, position = "identity", 
+                         colour = "grey20", geom = "line") +
+            theme_bw() +
+            xlab("") + ylab("")
+    })
     
-    fb.data %>% ggvis(~Total.Interactions, ~like, size := ~share * 10, fill = ~Type) %>%
-        layer_points(fill = ~Type) %>%
-        add_axis("x", title = 'Total.Interactions', orient = "bottom") %>%
-        add_axis("y", title = 'like', orient = "left") %>%
-        scale_numeric("x", domain = c(0, 7000), nice = T, clamp = F) %>%
-        scale_numeric("y", domain = c(0, 5500), nice = T, clamp = F) %>%
-        bind_shiny("ggvis")
-    
-    scatter_plot <- reactive({input$scatterCols})
-    output$scatterplot <- renderPlot({
-        fb %>%
-            select_(.dots = scatterCols()) %>%
-            ggpairs() +
-            theme_bw()
-    }, height = 550)
+    # parallel
+    output$parallel_plot <- renderPlotly({
+        ggparcoord(fb, columns = which(colnames(fb) %in% input$parallel_vars),
+                   groupColumn = 1,
+                   scale = "uniminmax", 
+                   scaleSummary = "center",
+                   showPoints = T,
+                   alphaLines = 0.5,
+                   title= "Parallel Plot")
+        
+    })
 }
 
 shinyApp(ui = ui, server = server)
